@@ -1,4 +1,5 @@
 venv/
+__pycache__/
 
 # Local Token Config
 config.py
