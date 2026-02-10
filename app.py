@@ -64,17 +64,32 @@ with c1:
 
     st.markdown("---")
     st.write("Existing")
-    for n, v in st.session_state.variables.items():
-        st.write(f"- **{n}**: {v['rule_description']}")
-        if st.button(f"Del {n}", key=f"del_{n}"):
-            del st.session_state.variables[n]
+    # Collect keys first to avoid "dict changed size during iteration" error
+    var_names = list(st.session_state.variables.keys())
+    for n in var_names:
+        v = st.session_state.variables.get(n)
+        if v:
+            st.write(f"- **{n}**: {v['rule_description']}")
+            if st.button(f"Del {n}", key=f"del_{n}"):
+                del st.session_state.variables[n]
 
 with c2:
     st.header("Editor")
+    question_types = [
+        "Multiple Choice",
+        "Short Answer",
+        "Essay",
+        "Fill in the Blank",
+        "True/False",
+    ]
+    current_type = st.session_state.get("question_type", "Multiple Choice")
+    current_index = (
+        question_types.index(current_type) if current_type in question_types else 0
+    )
     st.session_state.question_type = st.selectbox(
         "Type",
-        ["Multiple Choice", "Short Answer", "Essay", "Fill in the Blank", "True/False"],
-        index=0,
+        question_types,
+        index=current_index,
     )
     st.session_state.question_template = st.text_area(
         "Template (use {{var}})", value=st.session_state.question_template, height=200

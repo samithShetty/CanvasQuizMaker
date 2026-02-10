@@ -10,9 +10,15 @@ def _to_number(v: Any):
     if isinstance(v, (int, float)):
         return v
     try:
-        if isinstance(v, str) and v.isdigit():
-            return int(v)
-        return float(v)
+        if isinstance(v, str):
+            s = v.strip()
+            # support binary/hex/octal with 0b/0x/0o prefixes and plain ints
+            try:
+                return int(s, 0)
+            except Exception:
+                pass
+            # fallback to float
+            return float(s)
     except Exception:
         return v
 
@@ -21,17 +27,61 @@ def _eval_expr(expr: str, context: Dict[str, Any]):
     """Evaluate an expression using context variables and math funcs.
     Returns (value, error_flag)
     """
-    # allow both {{var}} and plain var references in expressions
-    expr = re.sub(r"\{\{\s*(\w+)\s*\}\}", r"\1", expr)
-
     # build eval locals: math funcs + context vars (coerced when possible)
     locals_ = {k: getattr(math, k) for k in dir(math) if not k.startswith("__")}
     for k, v in context.items():
         locals_[k] = _to_number(v)
 
+    # Expose a small set of safe Python helpers for conversions and simple ops
+    safe_builtins = {
+        "int": int,
+        "float": float,
+        "str": str,
+        "bin": bin,
+        "hex": hex,
+        "oct": oct,
+        "round": round,
+        "abs": abs,
+        "pow": pow,
+        "sum": sum,
+        "min": min,
+        "max": max,
+        "len": len,
+        "sorted": sorted,
+        "range": range,
+        "list": list,
+        "tuple": tuple,
+        "dict": dict,
+    }
+    locals_.update(safe_builtins)
+
+    # Helper to select a value from a mapping based on a key.
+    def select(key, mapping, default=None):
+        """Select value by key from a dict or iterable of pairs.
+
+        Examples:
+          select(var, {'f':'t0','g':'t1'}, 'default')
+          select(var, [('f','t0'),('g','t1')], 'default')
+        """
+        if mapping is None:
+            return default
+        if isinstance(mapping, dict):
+            return mapping.get(key, default)
+        try:
+            for k, v in mapping:
+                if k == key:
+                    return v
+        except Exception:
+            pass
+        return default
+
+    # expose select
+    locals_["select"] = select
+    locals_["case"] = select
+
     try:
-        # restrict builtins
-        val = eval(expr, {"__builtins__": None}, locals_)
+        # restrict builtins but allow the small set we injected in locals_
+        val = eval(expr, {"__builtins__": {}}, locals_)
         return val, False
     except Exception:
         return "<err>", True
@@ -63,6 +113,21 @@ def generate_value(
                 return "<err>"
             return val
 
+        if t == "custom":
+            desc = var_def.get("rule_data", {}).get("description", "")
+            # Try to evaluate as an expression (e.g., select(...) or {{...}})
+            if "{{" in desc and "}}" in desc:
+                # Use render_with_sample to handle {{...}} templates
+                rendered = render_with_sample(desc, current)
+                return rendered
+            else:
+                # Try plain evaluation
+                val, err = _eval_expr(desc, current)
+                if not err:
+                    return val
+            # If eval fails, return the plaintext description
+            return desc
+
         # fallback
         return var_def.get("rule_data", {}).get("description", "")
     except Exception:
@@ -85,12 +150,47 @@ def generate_sample(variables: Dict[str, Any]) -> Dict[str, Any]:
     return sample
 
 
+def format_text(text: str) -> str:
+    """Convert markdown-style formatting to HTML.
+
+    Supports:
+      - **text** or __text__ → <strong>text</strong>
+      - *text* or _text_ → <em>text</em>
+      - ~~text~~ → <s>text</s> (strikethrough)
+      - ==text== → <mark>text</mark> (highlight)
+      - HTML tags are passed through as-is
+
+    Order matters: apply in order to avoid double-processing.
+    """
+    if not text:
+        return text
+
+    # Strikethrough: ~~text~~
+    text = re.sub(r"~~([^~]+)~~", r"<s>\1</s>", text)
+
+    # Highlight: ==text==
+    text = re.sub(r"==([^=]+)==", r"<mark>\1</mark>", text)
+
+    # Bold: **text** or __text__
+    text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"__([^_]+)__", r"<strong>\1</strong>", text)
+
+    # Italic: *text* or _text_ (but not __text__ which is bold, and not inside **text**)
+    # Use negative lookbehind/lookahead to avoid matching bold markers
+    text = re.sub(r"(?<!\*)\*(?!\*)([^*]+?)\*(?!\*)", r"<em>\1</em>", text)
+    text = re.sub(r"(?<!_)_(?!_)([^_]+?)_(?!_)", r"<em>\1</em>", text)
+
+    return text
+
+
 def render_with_sample(text: str, sample: Dict[str, Any]) -> str:
     """Replace {{vars}} in text using sample mapping. Supports inline expressions.
 
     Examples:
       - {{num}} → variable lookup
       - {{ num * 2 }} → evaluated expression using sample values
+
+    Also supports markdown formatting: **bold**, *italic*, ~~strike~~, ==highlight==
     """
 
     def repl(m):
@@ -104,7 +204,9 @@ def render_with_sample(text: str, sample: Dict[str, Any]) -> str:
             return f"{{{{{token}}}}}"
         return str(val)
 
-    return re.sub(r"\{\{([^}]+)\}\}", repl, text)
+    rendered = re.sub(r"\{\{(.*?)\}\}", repl, text)
+    # Apply formatting after variable substitution
+    return format_text(rendered)
 
 
 def evaluate_expression(expr: str, sample: Dict[str, Any]) -> str:
