@@ -1,6 +1,7 @@
 import json
 
 import streamlit as st
+from canvasapi import Canvas
 
 from utils import evaluate_expression, generate_sample, render_with_sample
 
@@ -105,6 +106,25 @@ with c2:
         answer_key = st.text_area("Answer Key", height=80)
         st.session_state.template_data = {"type": "open", "answer_key": answer_key}
 
+    # General comment (applies to any question type)
+    general_comment = st.text_area(
+        "General Comment (optional)",
+        value=st.session_state.get("template_data", {}).get("general_comment", ""),
+        height=80,
+        key="general_comment",
+    )
+    include_general = st.checkbox(
+        "Include General Comment in preview",
+        value=st.session_state.get("template_data", {}).get("include_general", False),
+        key="include_general",
+    )
+
+    # Store/merge into template_data so it persists and is exported
+    td = st.session_state.get("template_data", {})
+    td["general_comment"] = general_comment
+    td["include_general"] = include_general
+    st.session_state.template_data = td
+
     # Generate controls
     st.markdown("**Generate Samples**")
     sample_count = st.number_input(
@@ -190,6 +210,14 @@ if samples:
                         cell_html += f"<div style='background-color:{bg_color}; padding:8px; border:1px dotted #888; border-radius:4px; margin-top:8px;'><sub>**Answer:** (none)</sub></div>"
 
                 cell_html += "</div>"
+
+                # Optionally show the general comment block
+                gc = td.get("general_comment", "") or ""
+                if td.get("include_general") and gc:
+                    rendered_gc = render_with_sample(gc, sample)
+                    cell_html += f"<div style='background-color:{bg_color}; padding:8px; border:1px dotted #888; border-radius:4px; margin-top:8px; white-space: pre-wrap;'><sub>**Comment:**</sub><br/><sub>{rendered_gc}</sub></div>"
+
+                cell_html += "</div>"
                 st.markdown(cell_html, unsafe_allow_html=True)
     st.download_button(
         "Export Samples JSON",
@@ -206,11 +234,54 @@ st.download_button(
         {
             "variables": st.session_state.variables,
             "template": st.session_state.question_template,
+            "template_data": st.session_state.get("template_data", {}),
         },
         indent=2,
     ),
     file_name="template.json",
     mime="application/json",
 )
+
+# Canvas Integration
+st.divider()
+st.header("🎓 Upload to Canvas")
+
+
+st.subheader("Question Bank")
+bank_id = st.number_input(
+    "Question Bank ID",
+    value=0,
+    step=1,
+    help="Enter the Canvas question bank ID to upload samples to",
+)
+
+if st.button("Upload Samples to Canvas", key="upload_canvas"):
+    samples = st.session_state.get("multiple_samples", [])
+    if not samples:
+        st.error("Generate samples first before uploading")
+    elif bank_id == 0:
+        st.error("Enter a valid question bank ID")
+    else:
+        try:
+            from canvas_integration import upload_samples_to_canvas
+
+            result = upload_samples_to_canvas(
+                int(bank_id),
+                samples,
+                st.session_state.question_template,
+                st.session_state.get("template_data", {}),
+                st.session_state.variables,
+            )
+
+            if result["success"] > 0:
+                st.success(f"✅ Uploaded {result['success']} questions to Canvas")
+            if result["failed"] > 0:
+                st.warning(f"⚠️ {result['failed']} questions failed")
+                if result["errors"]:
+                    with st.expander("View errors"):
+                        for err in result["errors"][:10]:
+                            st.text(err)
+        except Exception as e:
+            st.error(f"Upload failed: {str(e)}")
 
 st.caption("Minimal single-file UI backed by utils.py")
