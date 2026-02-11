@@ -1,6 +1,7 @@
 import math
 import random
 import re
+from itertools import product
 from typing import Any, Dict
 
 # Helpers
@@ -148,6 +149,52 @@ def generate_sample(variables: Dict[str, Any]) -> Dict[str, Any]:
     for name in variables:
         sample.setdefault(name, "?")
     return sample
+
+
+def generate_all_combinations(variables: Dict[str, Any]) -> list:
+    """Generate all possible combinations for random choice variables.
+
+    For each random_choice variable, include all possible choices.
+    For other variables, use generate_sample to get one value.
+    Returns a list of all possible sample combinations.
+    """
+    # Identify random choice variables and their options
+    choice_vars = {}
+    other_vars = {}
+
+    for name, vdef in variables.items():
+        if vdef.get("rule_data", {}).get("type") == "random_choice":
+            choices = vdef.get("rule_data", {}).get("choices", [])
+            choice_vars[name] = choices
+        else:
+            other_vars[name] = vdef
+
+    if not choice_vars:
+        # If no random choice variables, just generate one sample
+        return [generate_sample(variables)]
+
+    # Get all combinations of choice variables
+    choice_names = list(choice_vars.keys())
+    choice_lists = [choice_vars[name] for name in choice_names]
+
+    all_samples = []
+    for combo in product(*choice_lists):
+        sample = {}
+        # Add the choice values
+        for i, name in enumerate(choice_names):
+            sample[name] = combo[i]
+
+        # For other variables, generate values based on what we have so far
+        for name, vdef in other_vars.items():
+            val = generate_value(name, vdef, sample)
+            if val != "<err>":
+                sample[name] = val
+            else:
+                sample[name] = "?"
+
+        all_samples.append(sample)
+
+    return all_samples
 
 
 def format_text(text: str) -> str:

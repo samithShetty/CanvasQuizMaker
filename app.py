@@ -3,17 +3,103 @@ import json
 import streamlit as st
 from canvasapi import Canvas
 
-from utils import evaluate_expression, generate_sample, render_with_sample
+from utils import (
+    evaluate_expression,
+    generate_all_combinations,
+    generate_sample,
+    render_with_sample,
+)
 
 # Minimal single-page app
 st.set_page_config(page_title="Canvas Quiz Maker", layout="wide")
 st.title("Canvas Quiz Maker")
+
+# Add global JavaScript for copy functionality (plain text)
+st.markdown(
+    """
+<script>
+function copyToClipboard(elemId) {
+    const elem = document.getElementById(elemId);
+    if (!elem) {
+        console.log('Element not found:', elemId);
+        return;
+    }
+    const text = elem.innerText;
+    
+    // Use the Clipboard API
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(function() {
+            console.log('Copied to clipboard:', text);
+        }, function(err) {
+            console.log('Clipboard write failed:', err);
+            fallbackCopy(text);
+        });
+    } else {
+        fallbackCopy(text);
+    }
+}
+
+function fallbackCopy(text) {
+    // Fallback: use execCommand
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+        document.execCommand('copy');
+        console.log('Copied via fallback');
+    } catch (err) {
+        console.log('Fallback copy failed:', err);
+    }
+    document.body.removeChild(textarea);
+}
+</script>
+""",
+    unsafe_allow_html=True,
+)
 
 # init
 st.session_state.setdefault("variables", {})
 st.session_state.setdefault("question_template", "")
 st.session_state.setdefault("question_type", "Multiple Choice")
 st.session_state.setdefault("last_sample", {})
+
+# Save/Load functionality
+st.sidebar.header("💾 Save/Load")
+save_name = st.sidebar.text_input("Draft name", value="my_quiz", key="save_name")
+
+col_save, col_load = st.sidebar.columns([1, 1])
+with col_save:
+    if st.button("Save Draft"):
+        draft_data = {
+            "variables": st.session_state.variables,
+            "question_template": st.session_state.question_template,
+            "question_type": st.session_state.question_type,
+            "template_data": st.session_state.get("template_data", {}),
+        }
+        filename = f"SavedQuestions/{save_name}.json"
+        with open(filename, "w") as f:
+            json.dump(draft_data, f, indent=2)
+        st.sidebar.success(f"✅ Saved: {filename}")
+
+with col_load:
+    if st.button("Load Draft"):
+        filename = f"SavedQuestions/{save_name}.json"
+        try:
+            with open(filename, "r") as f:
+                draft_data = json.load(f)
+            st.session_state.variables = draft_data.get("variables", {})
+            st.session_state.question_template = draft_data.get("question_template", "")
+            st.session_state.question_type = draft_data.get(
+                "question_type", "Multiple Choice"
+            )
+            st.session_state.template_data = draft_data.get("template_data", {})
+            st.sidebar.success(f"✅ Loaded: {filename}")
+            st.rerun()
+        except FileNotFoundError:
+            st.sidebar.error(f"❌ File not found: {filename}")
+        except Exception as e:
+            st.sidebar.error(f"❌ Error loading: {str(e)}")
 
 c1, c2 = st.columns([1.1, 2])
 
@@ -118,8 +204,14 @@ with c2:
         correct = st.radio("Correct", ["True", "False"])
         st.session_state.template_data = {"type": "tf", "correct": correct}
     else:
-        answer_key = st.text_area("Answer Key", height=80)
-        st.session_state.template_data = {"type": "open", "answer_key": answer_key}
+        # Preserve any existing answer key when loading drafts
+        td_existing = st.session_state.get("template_data", {})
+        default_answer = td_existing.get("answer_key", "")
+        answer_key = st.text_area(
+            "Answer Key", value=default_answer, height=80, key="answer_key"
+        )
+        td_existing.update({"type": "open", "answer_key": answer_key})
+        st.session_state.template_data = td_existing
 
     # General comment (applies to any question type)
     general_comment = st.text_area(
@@ -149,7 +241,7 @@ with c2:
         value=3,
         key="sample_count",
     )
-    gen_col1, gen_col2 = st.columns([1, 1])
+    gen_col1, gen_col2, gen_col3 = st.columns([1, 1, 1])
     if gen_col1.button("Generate Now"):
         st.session_state.last_sample = generate_sample(st.session_state.variables)
         st.session_state.multiple_samples = [st.session_state.last_sample]
@@ -160,32 +252,56 @@ with c2:
         ]
         st.session_state.multiple_samples = samples
         st.session_state.last_sample = samples[0]
+    if gen_col3.button("All Combinations"):
+        samples = generate_all_combinations(st.session_state.variables)
+        st.session_state.multiple_samples = samples
+        if samples:
+            st.session_state.last_sample = samples[0]
+        st.info(f"Generated {len(samples)} combinations")
 
     st.divider()
     st.markdown("**Rendered (single)**")
-    st.write(
-        render_with_sample(
-            st.session_state.question_template or "", st.session_state.last_sample
-        )
-    )
+    sample = st.session_state.last_sample
+    q = render_with_sample(st.session_state.question_template or "", sample)
+
+    # Display question
+    st.markdown(f"**Question:** {q}", unsafe_allow_html=True)
+
+    # Display answer/options based on type
+    td = st.session_state.get("template_data", {})
+    if td.get("type") == "mc":
+        st.markdown("**Options:**")
+        for k, opt in enumerate(td.get("options", [])):
+            rendered_opt = render_with_sample(opt or "", sample)
+            if k == td.get("correct"):
+                st.markdown(f"- ✅ {rendered_opt}", unsafe_allow_html=True)
+            else:
+                st.markdown(f"- {rendered_opt}", unsafe_allow_html=True)
+    elif td.get("type") == "tf":
+        st.markdown(f"**Answer:** {td.get('correct')}")
+    elif td.get("type") == "open":
+        ak = td.get("answer_key", "") or ""
+        if ak:
+            rendered_answer = ""
+            if "{{" in ak and "}}" in ak:
+                rendered_answer = render_with_sample(ak, sample)
+            else:
+                rendered_answer = evaluate_expression(ak, sample)
+            st.markdown(f"**Answer:** {rendered_answer}", unsafe_allow_html=True)
+        else:
+            st.markdown("**Answer:** (none)")
+
+    # Show general comment if enabled
+    gc = td.get("general_comment", "") or ""
+    if td.get("include_general") and gc:
+        rendered_gc = render_with_sample(gc, sample)
+        st.markdown(f"**Comment:** {rendered_gc}", unsafe_allow_html=True)
 
 # ---------------- Preview Section (full width) ----------------
 st.divider()
-st.header("👁️ Live Preview")
-st.markdown("Rendered samples appear below in a compact grid")
-
-samples = st.session_state.get("multiple_samples", [])
-
-st.subheader("Variables")
-if st.session_state.variables:
-    for name, v in st.session_state.variables.items():
-        st.markdown(f"- **{name}** — {v['rule_description']}")
-else:
-    st.info("No variables defined yet")
-
-st.divider()
 st.subheader("Samples")
 
+samples = st.session_state.get("multiple_samples", [])
 if samples:
     cols_per_row = 4
     for i in range(0, len(samples), cols_per_row):
@@ -233,7 +349,19 @@ if samples:
                     cell_html += f"<div style='background-color:{bg_color}; padding:8px; border:1px dotted #888; border-radius:4px; margin-top:8px; white-space: pre-wrap;'><sub>**Comment:**</sub><br/><sub>{rendered_gc}</sub></div>"
 
                 cell_html += "</div>"
-                st.markdown(cell_html, unsafe_allow_html=True)
+
+                # Add copy button
+                cell_id = f"cell_{i}_{j}"
+                copy_button = f"""<div style="margin-top: 8px; text-align: center;">
+                    <button onclick="copyToClipboard('{cell_id}')" style="padding: 6px 12px; background-color: #06d6a0; color: #000; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold;">
+                        📋 Copy
+                    </button>
+                </div>"""
+
+                st.markdown(
+                    f"<div id='{cell_id}'>{cell_html}</div>{copy_button}",
+                    unsafe_allow_html=True,
+                )
     st.download_button(
         "Export Samples JSON",
         data=json.dumps(samples, indent=2),

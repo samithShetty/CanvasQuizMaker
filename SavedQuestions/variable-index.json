@@ -1,0 +1,95 @@
+{
+  "variables": {
+    "arr": {
+      "rule_type": "Random Choice",
+      "rule_description": "2 choices",
+      "rule_data": {
+        "type": "random_choice",
+        "choices": [
+          "A",
+          "B"
+        ]
+      }
+    },
+    "v1": {
+      "rule_type": "Random Choice",
+      "rule_description": "3 choices",
+      "rule_data": {
+        "type": "random_choice",
+        "choices": [
+          "a",
+          "b",
+          "i"
+        ]
+      }
+    },
+    "v2": {
+      "rule_type": "Random Choice",
+      "rule_description": "3 choices",
+      "rule_data": {
+        "type": "random_choice",
+        "choices": [
+          "a",
+          "b",
+          "i"
+        ]
+      }
+    },
+    "m1": {
+      "rule_type": "Custom",
+      "rule_description": " {{select(v1, {'a':'x11', 'b':'x12', 'i':'x15'})}}",
+      "rule_data": {
+        "type": "custom",
+        "description": " {{select(v1, {'a':'x11', 'b':'x12', 'i':'x15'})}}"
+      }
+    },
+    "m2": {
+      "rule_type": "Custom",
+      "rule_description": " {{select(v2, {'a':'x11', 'b':'x12', 'i':'x15'})}}",
+      "rule_data": {
+        "type": "custom",
+        "description": " {{select(v2, {'a':'x11', 'b':'x12', 'i':'x15'})}}"
+      }
+    },
+    "r2": {
+      "rule_type": "Custom",
+      "rule_description": " {{select(v2, {'a':'x1', 'b':'x2', 'i':'x5'})}}",
+      "rule_data": {
+        "type": "custom",
+        "description": " {{select(v2, {'a':'x1', 'b':'x2', 'i':'x5'})}}"
+      }
+    },
+    "r1": {
+      "rule_type": "Custom",
+      "rule_description": " {{select(v1, {'a':'x1', 'b':'x2', 'i':'x5'})}}",
+      "rule_data": {
+        "type": "custom",
+        "description": " {{select(v1, {'a':'x1', 'b':'x2', 'i':'x5'})}}"
+      }
+    },
+    "ma": {
+      "rule_type": "Custom",
+      "rule_description": " {{select(arr, {'A':'x16', 'B':'x17'})}}",
+      "rule_data": {
+        "type": "custom",
+        "description": " {{select(arr, {'A':'x16', 'B':'x17'})}}"
+      }
+    },
+    "load2": {
+      "rule_type": "Custom",
+      "rule_description": "<b> lw {{r2}}, 0({{m2}})</b>",
+      "rule_data": {
+        "type": "custom",
+        "description": "<b> lw {{r2}}, 0({{m2}})</b>"
+      }
+    }
+  },
+  "question_template": "{{arr}}[{{v1}}] = {{v2}}",
+  "question_type": "Essay",
+  "template_data": {
+    "type": "open",
+    "answer_key": "<b>lw {{r1}}, 0({{m1}}) </b># load the value of {{v1}} to register {{r1}}\n\n\n\n<b>slli t0, {{r1}}, 2</b> # multiply {{v1}} * 4 for byte offset\n\n<b>add t1, t0, {{ma}}   </b># create the address for {{arr}}[{{v1}}] by doing base address + offset. <i> You may reuse the same temp</i>\n\n{{load2+ \" # load the value of \" +v2+\" to register \"+r2 if v1!=v2 else \"\"}} \n\n<b>sw {{r2}}, 0(t1)</b> # store the value of {{v2}} at {{arr}}[{{v1}}]'s address",
+    "general_comment": "",
+    "include_general": false
+  }
+}
