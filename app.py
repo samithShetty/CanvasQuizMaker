@@ -1,8 +1,8 @@
 import json
 
 import streamlit as st
-from canvasapi import Canvas
 
+from canvas_integration import upload_samples_to_canvas
 from utils import (
     evaluate_expression,
     generate_all_combinations,
@@ -406,14 +406,12 @@ if st.button("Upload Samples to Canvas", key="upload_canvas"):
         st.error("Enter a valid question bank ID")
     else:
         try:
-            from canvas_integration import upload_samples_to_canvas
 
             result = upload_samples_to_canvas(
                 int(bank_id),
                 samples,
                 st.session_state.question_template,
                 st.session_state.get("template_data", {}),
-                st.session_state.variables,
             )
 
             if result["success"] > 0:
