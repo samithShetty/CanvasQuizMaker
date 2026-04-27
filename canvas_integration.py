@@ -10,14 +10,14 @@ import io
 import json
 import uuid
 import zipfile
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from xml.sax.saxutils import escape as _escape_xml
 
 import requests
 from canvasapi import Canvas
 from canvasapi import requester as canvas_requester
 
-from config import CANVAS_TOKEN, CANVAS_URL, COURSE_CODE, TEST_BANK_ID
+from config import CANVAS_TOKEN, CANVAS_URL, COURSE_CODE
 from utils import evaluate_expression, render_with_sample
 
 canvas = Canvas(CANVAS_URL, CANVAS_TOKEN)
@@ -25,280 +25,261 @@ course = canvas.get_course(COURSE_CODE)
 requester = canvas_requester.Requester(CANVAS_URL, CANVAS_TOKEN)
 
 
-def _build_qti_item(
-    idx: int,
-    sample: Dict[str, Any],
-    question_template: str,
-    template_data: Dict[str, Any],
+def _escape_html(text: str) -> str:
+    """Escape text for safe inclusion in XML."""
+    if text is None:
+        return ""
+    return _escape_xml(str(text))
+
+
+def _make_mc_item_xml(
+    identifier: str,
+    title: str,
+    question_text: str,
+    options: List[str],
+    correct_index: int,
+    general_comment: str = "",
 ) -> str:
-    """Build a QTI 1.2 <item> XML string for a single sample.
+    """Build a QTI v2.1 multiple-choice assessmentItem with optional general comment."""
+    choice_ids = [chr(ord("A") + i) for i in range(len(options))]
+    correct_id = (
+        choice_ids[correct_index]
+        if 0 <= correct_index < len(choice_ids)
+        else choice_ids[0]
+    )
 
-    This function generates a minimal QTI 1.2 item representation that Canvas
-    will accept for import. It is intentionally conservative; richer QTI
-    fields can be added later if needed.
-    """
-    q_text = _escape_xml(render_with_sample(question_template, sample))
-    q_type = template_data.get("type", "open")
-    item_ident = f"ITEM_{idx+1}"
+    escaped_question = _escape_html(question_text)
+    escaped_comment = _escape_html(general_comment) if general_comment else ""
 
-    if q_type == "mc":
-        options = [
-            render_with_sample(opt or "", sample)
-            for opt in template_data.get("options", [])
-        ]
-        correct_idx = int(template_data.get("correct", 0))
-
-        choices_xml = []
-        for j, opt in enumerate(options):
-            choices_xml.append(
-                f'<response_label ident="choice{j}"><material><mattext>{_escape_xml(opt)}</mattext></material></response_label>'
-            )
-
-        resprocessing = (
-            f"<resprocessing><respcondition><conditionvar><varequal>choice{correct_idx}</varequal></conditionvar>"
-            '<setvar action="Set">100</setvar></respcondition></resprocessing>'
+    option_xml = []
+    for cid, opt in zip(choice_ids, options):
+        option_xml.append(
+            f'      <simpleChoice identifier="{cid}" fixed="false">{_escape_html(opt)}</simpleChoice>'
         )
 
-        item = (
-            f'<item ident="{item_ident}"><presentation>'
-            f"<material><mattext>{q_text}</mattext></material>"
-            '<response_lid ident="response1" rcardinality="Single">'
-            "<render_choice>"
-            + "".join(choices_xml)
-            + "</render_choice></response_lid></presentation>"
-            + resprocessing
-            + "</item>"
-        )
+    feedback_block = ""
+    if escaped_comment:
+        feedback_block = f"""
+  <modalFeedback identifier="GENERAL" outcomeIdentifier="FEEDBACK" showHide="show">
+    <p>{escaped_comment}</p>
+  </modalFeedback>"""
 
-    elif q_type == "tf":
-        # True/False as a two-choice MC
-        correct = template_data.get("correct", "True")
-        correct_idx = 0 if str(correct).lower() in ("true", "t", "1") else 1
-        options = ["True", "False"]
-        choices_xml = []
-        for j, opt in enumerate(options):
-            choices_xml.append(
-                f'<response_label ident="choice{j}"><material><mattext>{opt}</mattext></material></response_label>'
-            )
-
-        resprocessing = (
-            f"<resprocessing><respcondition><conditionvar><varequal>choice{correct_idx}</varequal></conditionvar>"
-            '<setvar action="Set">100</setvar></respcondition></resprocessing>'
-        )
-
-        item = (
-            f'<item ident="{item_ident}"><presentation>'
-            f"<material><mattext>{q_text}</mattext></material>"
-            '<response_lid ident="response1" rcardinality="Single">'
-            "<render_choice>"
-            + "".join(choices_xml)
-            + "</render_choice></response_lid></presentation>"
-            + resprocessing
-            + "</item>"
-        )
-
-    else:
-        # Short answer / open question
-        ak = template_data.get("answer_key", "")
-        if "{{" in ak and "}}" in ak:
-            answer = render_with_sample(ak, sample)
-        else:
-            answer = evaluate_expression(ak, sample)
-
-        item = (
-            f'<item ident="{item_ident}"><presentation>'
-            f"<material><mattext>{q_text}</mattext></material>"
-            '<response_str ident="response1" rcardinality="Single"/>'
-            "</presentation>"
-            "<resprocessing>"
-            f"<respcondition><conditionvar><varequal><![CDATA[{_escape_xml(str(answer))}]]></varequal></conditionvar>"
-            '<setvar action="Set">100</setvar></respcondition>'
-            "</resprocessing>"
-            "</item>"
-        )
-
-    return item
+    item_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<assessmentItem xmlns="http://www.imsglobal.org/xsd/imsqti_v2p1"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.imsglobal.org/xsd/imsqti_v2p1 http://www.imsglobal.org/xsd/qti/qtiv2p1/imsqti_v2p1.xsd"
+    identifier="{_escape_html(identifier)}"
+    title="{_escape_html(title)}"
+    adaptive="false"
+    timeDependent="false">
+  <responseDeclaration identifier="RESPONSE" cardinality="single" baseType="identifier">
+    <correctResponse>
+      <value>{_escape_html(correct_id)}</value>
+    </correctResponse>
+  </responseDeclaration>
+  <outcomeDeclaration identifier="SCORE" cardinality="single" baseType="float">
+    <defaultValue>
+      <value>1</value>
+    </defaultValue>
+  </outcomeDeclaration>
+  <itemBody>
+    <p>{escaped_question}</p>
+    <choiceInteraction responseIdentifier="RESPONSE" shuffle="false" maxChoices="1">
+      <prompt>{escaped_question}</prompt>
+{chr(10).join(option_xml)}
+    </choiceInteraction>
+  </itemBody>{feedback_block}
+  <responseProcessing template="http://www.imsglobal.org/question/qti_v2p1/rptemplates/map_response"/>
+</assessmentItem>
+'''
+    return item_xml
 
 
-def _create_qti_zip(
-    samples: List[Dict[str, Any]], question_template: str, template_data: Dict[str, Any]
-) -> bytes:
-    """Create an in-memory QTI 1.2 zip package containing all items for samples.
-
-    Returns bytes of the zip file ready for upload.
-    """
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        # Create items folder and item files
-        manifest_resources = []
-        for idx, sample in enumerate(samples):
-            item_xml = _build_qti_item(idx, sample, question_template, template_data)
-            item_path = f"items/item_{idx+1}.xml"
-            zf.writestr(
-                item_path,
-                f'<?xml version="1.0" encoding="UTF-8"?>\n<questestinterop>{item_xml}</questestinterop>',
-            )
-            res_id = f"RES_{idx+1}"
-            manifest_resources.append((res_id, item_path))
-
-        # Build a minimal imsmanifest.xml referencing the item files
-        manifest_id = f"man_{uuid.uuid4().hex}"
-        resources_xml = []
-        for res_id, href in manifest_resources:
-            resources_xml.append(
-                f'<resource identifier="{res_id}" type="associatedcontent/imsqti_xmlv1p2">\n<file href="{href}"/>\n</resource>'
-            )
-
-        manifest = (
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            f'<manifest identifier="{manifest_id}" xmlns="http://www.imsglobal.org/xsd/ims_qtiasiv1p2">\n'
-            "<metadata><schema>IMS QTI</schema></metadata>\n"
-            "<organizations/>\n"
-            "<resources>\n" + "\n".join(resources_xml) + "\n</resources>\n</manifest>"
-        )
-
-        zf.writestr("imsmanifest.xml", manifest)
-
-    buf.seek(0)
-    return buf.read()
+def _make_tf_item_xml(
+    identifier: str,
+    title: str,
+    question_text: str,
+    correct_value: str,
+    general_comment: str = "",
+) -> str:
+    """Build a QTI v2.1 true/false item as a 2-option MC."""
+    options = ["True", "False"]
+    correct_index = 0 if str(correct_value).lower() == "true" else 1
+    return _make_mc_item_xml(
+        identifier, title, question_text, options, correct_index, general_comment
+    )
 
 
-def _upload_qti_to_canvas(
-    qti_bytes: bytes, filename: str = "questions.zip"
-) -> Dict[str, Any]:
-    """Upload the QTI ZIP directly to Canvas using the content_migrations API."""
-    try:
-        migration = course.create_content_migration(
-            migration_type="qti_converter",
-            pre_attachment={"name": filename, "data": qti_bytes},
-        )
+def _make_open_item_xml(
+    identifier: str,
+    title: str,
+    question_text: str,
+    general_comment: str = "",
+) -> str:
+    """Build a QTI v2.1 open-ended item using extendedTextInteraction and optional general comment."""
+    escaped_question = _escape_html(question_text)
+    escaped_comment = _escape_html(general_comment) if general_comment else ""
 
-        if migration is None or migration.get_migration_issues()._has_next():
-            return {
-                "ok": False,
-                "error": str(migration.get_migration_issues()[0]),
-            }
-        return {"ok": True, "response": str(migration.get_progress())}
-    except Exception as e:
-        print(e)
-        return {"ok": False, "error": str(e)}
+    feedback_block = ""
+    if escaped_comment:
+        feedback_block = f"""
+  <modalFeedback identifier="GENERAL" outcomeIdentifier="FEEDBACK" showHide="show">
+    <p>{escaped_comment}</p>
+  </modalFeedback>"""
+
+    item_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<assessmentItem xmlns="http://www.imsglobal.org/xsd/imsqti_v2p1"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.imsglobal.org/xsd/imsqti_v2p1 http://www.imsglobal.org/xsd/qti/qtiv2p1/imsqti_v2p1.xsd"
+    identifier="{_escape_html(identifier)}"
+    title="{_escape_html(title)}"
+    adaptive="false"
+    timeDependent="false">
+  <responseDeclaration identifier="RESPONSE" cardinality="single" baseType="string"/>
+  <outcomeDeclaration identifier="SCORE" cardinality="single" baseType="float">
+    <defaultValue>
+      <value>0</value>
+    </defaultValue>
+  </outcomeDeclaration>
+  <itemBody>
+    <p>{escaped_question}</p>
+    <extendedTextInteraction responseIdentifier="RESPONSE" expectedLines="3"/>
+  </itemBody>{feedback_block}
+</assessmentItem>
+'''
+    return item_xml
 
 
-def upload_samples_to_canvas(
-    bank_id: int,
-    samples: List[Dict[str, Any]],
+def build_qti_v21_package(
+    bank_title: str,
     question_template: str,
     template_data: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Export samples as QTI and import into Canvas, falling back if necessary.
+    samples: List[Dict[str, Any]],
+    question_type: str,
+) -> Tuple[bytes, str]:
+    """Create a QTI v2.1 question bank ZIP from generated samples.
 
-    Returns a summary dict describing success/failure and any import response.
+    Returns (zip_bytes, suggested_filename).
     """
-    results = {"success": 0, "failed": 0, "errors": [], "import_response": None}
+    if not samples:
+        raise ValueError("No samples available to export.")
 
-    try:
-        qti_bytes = _create_qti_zip(samples, question_template, template_data)
-    except Exception as e:
-        results["failed"] = len(samples)
-        results["errors"].append(f"Failed to build QTI package: {str(e)}")
-        return results
+    bank_id = f"bank-{uuid.uuid4()}"
+    safe_title = bank_title or "question-bank"
+    zip_filename = f"{safe_title.replace(' ', '_')}.qti.zip"
 
-    upload_result = _upload_qti_to_canvas(qti_bytes)
-    if upload_result.get("ok"):
-        results["import_response"] = upload_result.get("response")
-        results["success"] = len(samples)
-        return results
-    else:
-        # QTI import failed; record error and attempt per-question fallback
-        results["errors"].append(f"QTI import failed: {upload_result.get('error')}")
+    item_filenames: List[str] = []
+    manifest_resources: List[str] = []
 
-    # Fallback: attempt the previous per-sample question creation behavior
-    # (mostly preserved from earlier implementation). We won't attempt to
-    # re-verify bank existence here; reuse requester where possible.
-    for idx, sample in enumerate(samples):
-        try:
-            q_text = render_with_sample(question_template, sample)
-            q_type = template_data.get("type", "open")
+    mem = io.BytesIO()
+    with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as zf:
+        for idx, sample in enumerate(samples, start=1):
+            q_text = render_with_sample(question_template or "", sample)
 
-            if q_type == "mc":
-                options = [
-                    render_with_sample(opt or "", sample)
-                    for opt in template_data.get("options", [])
-                ]
-                correct_idx = template_data.get("correct", 0)
+            item_identifier = f"item-{idx}"
+            item_title = f"{safe_title} #{idx}"
 
-                answers = [
-                    {
-                        "id": k,
-                        "text": opt,
-                        "comments": "",
-                        "weight": 100 if k == correct_idx else 0,
-                        "blank": False,
-                    }
-                    for k, opt in enumerate(options)
-                ]
+            qti_type = (template_data or {}).get("type")
+            include_general = bool((template_data or {}).get("include_general"))
+            comment_from_answer = bool((template_data or {}).get("comment_from_answer"))
+            general_comment_tpl = (template_data or {}).get("general_comment", "") or ""
 
-                question_data = {
-                    "question_name": f"Sample {idx + 1}",
-                    "question_type": "multiple_choice",
-                    "question_text": q_text,
-                    "answers": answers,
-                }
+            # Default: no general comment text for this sample
+            general_comment_text = ""
 
-            elif q_type == "tf":
-                correct = template_data.get("correct", "True")
-                correct_idx = 0 if correct == "True" else 1
-                answers = [
-                    {
-                        "id": 0,
-                        "text": "True",
-                        "weight": 100 if correct_idx == 0 else 0,
-                        "comments": "",
-                    },
-                    {
-                        "id": 1,
-                        "text": "False",
-                        "weight": 100 if correct_idx == 1 else 0,
-                        "comments": "",
-                    },
-                ]
+            if question_type == "Multiple Choice" or qti_type == "mc":
+                options: List[str] = []
+                for opt in (template_data or {}).get("options", []):
+                    rendered_opt = render_with_sample(opt or "", sample)
+                    options.append(rendered_opt)
 
-                question_data = {
-                    "question_name": f"Sample {idx + 1}",
-                    "question_type": "true_false",
-                    "question_text": q_text,
-                    "answers": answers,
-                }
+                correct_index = int((template_data or {}).get("correct", 0) or 0)
 
-            else:
-                ak = template_data.get("answer_key", "")
-                if "{{" in ak and "}}" in ak:
-                    answer = render_with_sample(ak, sample)
-                else:
-                    answer = evaluate_expression(ak, sample)
+                if include_general:
+                    if comment_from_answer and 0 <= correct_index < len(options):
+                        general_comment_text = options[correct_index]
+                    elif general_comment_tpl:
+                        general_comment_text = render_with_sample(
+                            general_comment_tpl, sample
+                        )
 
-                question_data = {
-                    "question_name": f"Sample {idx + 1}",
-                    "question_type": "short_answer_question",
-                    "question_text": q_text,
-                    "answers": [
-                        {"id": 1, "text": answer, "weight": 100, "comments": ""}
-                    ],
-                }
-
-            # Attempt to create via raw request to question banks endpoint
-            try:
-                post_url = (
-                    f"/api/v1/courses/{COURSE_CODE}/question_banks/{bank_id}/questions"
+                item_xml = _make_mc_item_xml(
+                    identifier=item_identifier,
+                    title=item_title,
+                    question_text=q_text,
+                    options=options,
+                    correct_index=correct_index,
+                    general_comment=general_comment_text,
                 )
-                requester.request("POST", post_url, data=question_data)
-                results["success"] += 1
-            except Exception as e:
-                results["failed"] += 1
-                results["errors"].append(f"Sample {idx + 1}: {str(e)}")
+            elif question_type == "True/False" or qti_type == "tf":
+                correct_val = (template_data or {}).get("correct", "True")
 
-        except Exception as e:
-            results["failed"] += 1
-            results["errors"].append(f"Sample {idx + 1}: {str(e)}")
+                if include_general:
+                    if comment_from_answer:
+                        general_comment_text = str(correct_val)
+                    elif general_comment_tpl:
+                        general_comment_text = render_with_sample(
+                            general_comment_tpl, sample
+                        )
 
-    return results
+                item_xml = _make_tf_item_xml(
+                    identifier=item_identifier,
+                    title=item_title,
+                    question_text=q_text,
+                    correct_value=correct_val,
+                    general_comment=general_comment_text,
+                )
+            else:
+                # Open-ended style (short answer, essay, fill in the blank, etc.)
+                answer_key_expr = (template_data or {}).get("answer_key", "") or ""
+                if answer_key_expr:
+                    if "{{" in answer_key_expr and "}}" in answer_key_expr:
+                        rendered_answer = render_with_sample(answer_key_expr, sample)
+                    else:
+                        rendered_answer = evaluate_expression(answer_key_expr, sample)
+                else:
+                    rendered_answer = ""
+
+                if include_general:
+                    if comment_from_answer and rendered_answer:
+                        general_comment_text = rendered_answer
+                    elif general_comment_tpl:
+                        general_comment_text = render_with_sample(
+                            general_comment_tpl, sample
+                        )
+
+                item_xml = _make_open_item_xml(
+                    identifier=item_identifier,
+                    title=item_title,
+                    question_text=q_text,
+                    general_comment=general_comment_text,
+                )
+
+            item_filename = f"item_{idx}.xml"
+            item_filenames.append(item_filename)
+            zf.writestr(item_filename, item_xml)
+
+        # Build imsmanifest.xml referencing each item
+        resources_xml = []
+        for idx, item_filename in enumerate(item_filenames, start=1):
+            res_id = f"RES-{idx}"
+            resources_xml.append(
+                f'''    <resource identifier="{res_id}" type="imsqti_item_xmlv2p1" href="{item_filename}">
+      <file href="{item_filename}"/>
+    </resource>'''
+            )
+
+        manifest_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<manifest xmlns="http://www.imsglobal.org/xsd/imscp_v1p1"
+    xmlns:imsqti="http://www.imsglobal.org/xsd/imsqti_v2p1"
+    identifier="{_escape_html(bank_id)}">
+  <organizations/>
+  <resources>
+{chr(10).join(resources_xml)}
+  </resources>
+</manifest>
+'''
+        zf.writestr("imsmanifest.xml", manifest_xml)
+
+    mem.seek(0)
+    return mem.read(), zip_filename

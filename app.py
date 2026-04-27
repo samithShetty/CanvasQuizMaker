@@ -2,7 +2,7 @@ import json
 
 import streamlit as st
 
-from canvas_integration import upload_samples_to_canvas
+from canvas_integration import build_qti_v21_package
 from utils import (
     evaluate_expression,
     generate_all_combinations,
@@ -13,50 +13,6 @@ from utils import (
 # Minimal single-page app
 st.set_page_config(page_title="Canvas Quiz Maker", layout="wide")
 st.title("Canvas Quiz Maker")
-
-# Add global JavaScript for copy functionality (plain text)
-st.markdown(
-    """
-<script>
-function copyToClipboard(elemId) {
-    const elem = document.getElementById(elemId);
-    if (!elem) {
-        console.log('Element not found:', elemId);
-        return;
-    }
-    const text = elem.innerText;
-    
-    // Use the Clipboard API
-    if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(text).then(function() {
-            console.log('Copied to clipboard:', text);
-        }, function(err) {
-            console.log('Clipboard write failed:', err);
-            fallbackCopy(text);
-        });
-    } else {
-        fallbackCopy(text);
-    }
-}
-
-function fallbackCopy(text) {
-    // Fallback: use execCommand
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    document.body.appendChild(textarea);
-    textarea.select();
-    try {
-        document.execCommand('copy');
-        console.log('Copied via fallback');
-    } catch (err) {
-        console.log('Fallback copy failed:', err);
-    }
-    document.body.removeChild(textarea);
-}
-</script>
-""",
-    unsafe_allow_html=True,
-)
 
 # init
 st.session_state.setdefault("variables", {})
@@ -214,22 +170,30 @@ with c2:
         st.session_state.template_data = td_existing
 
     # General comment (applies to any question type)
+    td_existing = st.session_state.get("template_data", {})
     general_comment = st.text_area(
         "General Comment (optional)",
-        value=st.session_state.get("template_data", {}).get("general_comment", ""),
+        value=td_existing.get("general_comment", ""),
         height=80,
         key="general_comment",
     )
     include_general = st.checkbox(
-        "Include General Comment in preview",
-        value=st.session_state.get("template_data", {}).get("include_general", False),
+        "Include General Comment in preview / export",
+        value=td_existing.get("include_general", False),
         key="include_general",
+    )
+    comment_from_answer = st.checkbox(
+        "Make Comment use Answer Key (where applicable)",
+        value=td_existing.get("comment_from_answer", False),
+        key="comment_from_answer",
     )
 
     # Store/merge into template_data so it persists and is exported
     td = st.session_state.get("template_data", {})
     td["general_comment"] = general_comment
-    td["include_general"] = include_general
+    # If comment derives from answer, always include it in export/preview
+    td["include_general"] = bool(include_general or comment_from_answer)
+    td["comment_from_answer"] = bool(comment_from_answer)
     st.session_state.template_data = td
 
     # Generate controls
@@ -241,23 +205,42 @@ with c2:
         value=3,
         key="sample_count",
     )
+    append_samples = st.checkbox(
+        "Append new samples to existing list",
+        value=st.session_state.get("append_samples", False),
+        key="append_samples",
+    )
     gen_col1, gen_col2, gen_col3 = st.columns([1, 1, 1])
     if gen_col1.button("Generate Now"):
-        st.session_state.last_sample = generate_sample(st.session_state.variables)
-        st.session_state.multiple_samples = [st.session_state.last_sample]
+        new_sample = generate_sample(st.session_state.variables)
+        st.session_state.last_sample = new_sample
+        if st.session_state.append_samples:
+            existing = st.session_state.get("multiple_samples", [])
+            st.session_state.multiple_samples = existing + [new_sample]
+        else:
+            st.session_state.multiple_samples = [new_sample]
     if gen_col2.button("Generate Samples"):
-        samples = [
+        new_samples = [
             generate_sample(st.session_state.variables)
             for _ in range(int(sample_count))
         ]
-        st.session_state.multiple_samples = samples
-        st.session_state.last_sample = samples[0]
+        if st.session_state.append_samples:
+            existing = st.session_state.get("multiple_samples", [])
+            st.session_state.multiple_samples = existing + new_samples
+        else:
+            st.session_state.multiple_samples = new_samples
+        if new_samples:
+            st.session_state.last_sample = new_samples[-1]
     if gen_col3.button("All Combinations"):
-        samples = generate_all_combinations(st.session_state.variables)
-        st.session_state.multiple_samples = samples
-        if samples:
-            st.session_state.last_sample = samples[0]
-        st.info(f"Generated {len(samples)} combinations")
+        new_samples = generate_all_combinations(st.session_state.variables)
+        if st.session_state.append_samples:
+            existing = st.session_state.get("multiple_samples", [])
+            st.session_state.multiple_samples = existing + new_samples
+        else:
+            st.session_state.multiple_samples = new_samples
+        if new_samples:
+            st.session_state.last_sample = new_samples[-1]
+        st.info(f"Generated {len(new_samples)} combinations")
 
     st.divider()
     st.markdown("**Rendered (single)**")
@@ -292,10 +275,22 @@ with c2:
             st.markdown("**Answer:** (none)")
 
     # Show general comment if enabled
-    gc = td.get("general_comment", "") or ""
-    if td.get("include_general") and gc:
-        rendered_gc = render_with_sample(gc, sample)
-        st.markdown(f"**Comment:** {rendered_gc}", unsafe_allow_html=True)
+    comment_from_answer = td.get("comment_from_answer", False)
+    if td.get("include_general"):
+        rendered_gc = None
+        if comment_from_answer and td.get("type") == "open":
+            ak = td.get("answer_key", "") or ""
+            if ak:
+                if "{{" in ak and "}}" in ak:
+                    rendered_gc = render_with_sample(ak, sample)
+                else:
+                    rendered_gc = evaluate_expression(ak, sample)
+        else:
+            gc = td.get("general_comment", "") or ""
+            if gc:
+                rendered_gc = render_with_sample(gc, sample)
+        if rendered_gc:
+            st.markdown(f"**Comment:** {rendered_gc}", unsafe_allow_html=True)
 
 # ---------------- Preview Section (full width) ----------------
 st.divider()
@@ -303,65 +298,80 @@ st.subheader("Samples")
 
 samples = st.session_state.get("multiple_samples", [])
 if samples:
-    cols_per_row = 4
+    cols_per_row = 2
     for i in range(0, len(samples), cols_per_row):
         row = samples[i : i + cols_per_row]
         cols = st.columns(cols_per_row)
         for j, sample in enumerate(row):
             with cols[j]:
-                sample_idx = i // cols_per_row + j
-                bg_color = "#04070f" if (sample_idx + (i % 2)) % 2 else "#10192f"
-                q = render_with_sample(st.session_state.question_template or "", sample)
+                sample_idx = i + j
 
                 td = st.session_state.get("template_data", {})
-                cell_html = f"<div style='background-color:{bg_color}; padding:12px; border-radius:6px;'>"
-                cell_html += f"<div style='padding:8px;'>{q}</div>"
+                q = render_with_sample(
+                    st.session_state.question_template or "", sample
+                )
+
+                # ---- Visual separator per sample with alternating background ----
+                bg_color = "#10192f" if sample_idx % 2 == 0 else "#04070f"
+                st.markdown(
+                    f"<div style='background-color:{bg_color}; padding:8px; "
+                    f"border-radius:6px; margin-bottom:4px;'><strong>Sample {sample_idx + 1}</strong></div>",
+                    unsafe_allow_html=True,
+                )
+
+                # ---- Build question copy text ----
+                question_copy = f"{q}"
+
+                # ---- Build answer/options/comment copy text ----
+                answer_lines = []
 
                 if td.get("type") == "mc":
-                    cell_html += f"<div style='background-color:{bg_color}; padding:8px; border:1px dotted #888; border-radius:4px; margin-top:8px;'><sub>**Options**</sub>"
+                    answer_lines.append("Options:")
                     for k, opt in enumerate(td.get("options", [])):
                         rendered_opt = render_with_sample(opt or "", sample)
-                        if k == td.get("correct"):
-                            cell_html += f"<br/><sub>- ✅ {rendered_opt}</sub>"
-                        else:
-                            cell_html += f"<br/><sub>- {rendered_opt}</sub>"
-                    cell_html += "</div>"
+                        prefix = "✅ " if k == td.get("correct") else ""
+                        answer_lines.append(f"- {prefix}{rendered_opt}")
                 elif td.get("type") == "tf":
-                    cell_html += f"<div style='background-color:{bg_color}; padding:8px; border:1px dotted #888; border-radius:4px; margin-top:8px;'><sub>**Answer:** {td.get('correct')}</sub></div>"
+                    ans = str(td.get("correct"))
+                    answer_lines.append(f"{ans}")
                 elif td.get("type") == "open":
                     ak = td.get("answer_key", "") or ""
                     if ak:
-                        rendered_answer = ""
                         if "{{" in ak and "}}" in ak:
                             rendered_answer = render_with_sample(ak, sample)
                         else:
                             rendered_answer = evaluate_expression(ak, sample)
-                        cell_html += f"<div style='background-color:{bg_color}; padding:8px; border:1px dotted #888; border-radius:4px; margin-top:8px; white-space: pre-wrap;'><sub>**Answer:**</sub><br/><sub>{rendered_answer}</sub></div>"
+                        answer_lines.append(f"{rendered_answer}")
                     else:
-                        cell_html += f"<div style='background-color:{bg_color}; padding:8px; border:1px dotted #888; border-radius:4px; margin-top:8px;'><sub>**Answer:** (none)</sub></div>"
+                        answer_lines.append("Answer: (none)")
 
-                cell_html += "</div>"
+                # Optional comment
+                comment_from_answer = td.get("comment_from_answer", False)
+                if td.get("include_general"):
+                    rendered_gc = None
+                    if comment_from_answer and td.get("type") == "open":
+                        ak = td.get("answer_key", "") or ""
+                        if ak:
+                            if "{{" in ak and "}}" in ak:
+                                rendered_gc = render_with_sample(ak, sample)
+                            else:
+                                rendered_gc = evaluate_expression(ak, sample)
+                    else:
+                        gc = td.get("general_comment", "") or ""
+                        if gc:
+                            rendered_gc = render_with_sample(gc, sample)
 
-                # Optionally show the general comment block
-                gc = td.get("general_comment", "") or ""
-                if td.get("include_general") and gc:
-                    rendered_gc = render_with_sample(gc, sample)
-                    cell_html += f"<div style='background-color:{bg_color}; padding:8px; border:1px dotted #888; border-radius:4px; margin-top:8px; white-space: pre-wrap;'><sub>**Comment:**</sub><br/><sub>{rendered_gc}</sub></div>"
+                    if rendered_gc:
+                        answer_lines.append(f"Comment: {rendered_gc}")
 
-                cell_html += "</div>"
+                answer_copy = "\n".join(answer_lines) if answer_lines else ""
 
-                # Add copy button
-                cell_id = f"cell_{i}_{j}"
-                copy_button = f"""<div style="margin-top: 8px; text-align: center;">
-                    <button onclick="copyToClipboard('{cell_id}')" style="padding: 6px 12px; background-color: #06d6a0; color: #000; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold;">
-                        📋 Copy
-                    </button>
-                </div>"""
+                # ---- Layout: stack question and answer vertically within the column ----
+                st.caption("Question")
+                st.code(question_copy, language="text")
 
-                st.markdown(
-                    f"<div id='{cell_id}'>{cell_html}</div>{copy_button}",
-                    unsafe_allow_html=True,
-                )
+                st.caption("Answer / options")
+                st.code(answer_copy, language="text")
     st.download_button(
         "Export Samples JSON",
         data=json.dumps(samples, indent=2),
@@ -387,42 +397,36 @@ st.download_button(
 
 # Canvas Integration
 st.divider()
-st.header("🎓 Upload to Canvas")
-
+st.header("🎓 Export to QTI")
 
 st.subheader("Question Bank")
-bank_id = st.number_input(
-    "Question Bank ID",
-    value=0,
-    step=1,
-    help="Enter the Canvas question bank ID to upload samples to",
-)
+samples_for_qti = st.session_state.get("multiple_samples", [])
 
-if st.button("Upload Samples to Canvas", key="upload_canvas"):
-    samples = st.session_state.get("multiple_samples", [])
-    if not samples:
-        st.error("Generate samples first before uploading")
-    elif bank_id == 0:
-        st.error("Enter a valid question bank ID")
-    else:
-        try:
+if not samples_for_qti:
+    st.info("Generate samples above before exporting to QTI.")
+else:
+    bank_title = st.text_input(
+        "Question bank title",
+        value="Canvas Quiz Maker Bank",
+        key="qti_bank_title",
+    )
 
-            result = upload_samples_to_canvas(
-                int(bank_id),
-                samples,
-                st.session_state.question_template,
-                st.session_state.get("template_data", {}),
-            )
+    try:
+        qti_bytes, qti_filename = build_qti_v21_package(
+            bank_title=bank_title,
+            question_template=st.session_state.question_template or "",
+            template_data=st.session_state.get("template_data", {}),
+            samples=samples_for_qti,
+            question_type=st.session_state.question_type,
+        )
 
-            if result["success"] > 0:
-                st.success(f"✅ Uploaded {result['success']} questions to Canvas")
-            if result["failed"] > 0:
-                st.warning(f"⚠️ {result['failed']} questions failed")
-                if result["errors"]:
-                    with st.expander("View errors"):
-                        for err in result["errors"][:10]:
-                            st.text(err)
-        except Exception as e:
-            st.error(f"Upload failed: {str(e)}")
+        st.download_button(
+            "Export QTI v2.1 Question Bank (ZIP)",
+            data=qti_bytes,
+            file_name=qti_filename,
+            mime="application/zip",
+        )
+    except Exception as e:
+        st.error(f"Failed to build QTI package: {e}")
 
 st.caption("Minimal single-file UI backed by utils.py")

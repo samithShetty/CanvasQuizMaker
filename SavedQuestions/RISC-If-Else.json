@@ -1,0 +1,127 @@
+{
+  "variables": {
+    "arr": {
+      "rule_type": "Random Choice",
+      "rule_description": "2 choices",
+      "rule_data": {
+        "type": "random_choice",
+        "choices": [
+          "A",
+          "B"
+        ]
+      }
+    },
+    "v1": {
+      "rule_type": "Random Choice",
+      "rule_description": "3 choices",
+      "rule_data": {
+        "type": "random_choice",
+        "choices": [
+          "a",
+          "b",
+          "i"
+        ]
+      }
+    },
+    "v2": {
+      "rule_type": "Random Choice",
+      "rule_description": "3 choices",
+      "rule_data": {
+        "type": "random_choice",
+        "choices": [
+          "a",
+          "b",
+          "i"
+        ]
+      }
+    },
+    "m1": {
+      "rule_type": "Custom",
+      "rule_description": " {{select(v1, {'a':'x11', 'b':'x12', 'i':'x15'})}}",
+      "rule_data": {
+        "type": "custom",
+        "description": " {{select(v1, {'a':'x11', 'b':'x12', 'i':'x15'})}}"
+      }
+    },
+    "m2": {
+      "rule_type": "Custom",
+      "rule_description": " {{select(v2, {'a':'x11', 'b':'x12', 'i':'x15'})}}",
+      "rule_data": {
+        "type": "custom",
+        "description": " {{select(v2, {'a':'x11', 'b':'x12', 'i':'x15'})}}"
+      }
+    },
+    "r2": {
+      "rule_type": "Custom",
+      "rule_description": " {{select(v2, {'a':'x1', 'b':'x2', 'i':'x5'})}}",
+      "rule_data": {
+        "type": "custom",
+        "description": " {{select(v2, {'a':'x1', 'b':'x2', 'i':'x5'})}}"
+      }
+    },
+    "r1": {
+      "rule_type": "Custom",
+      "rule_description": " {{select(v1, {'a':'x1', 'b':'x2', 'i':'x5'})}}",
+      "rule_data": {
+        "type": "custom",
+        "description": " {{select(v1, {'a':'x1', 'b':'x2', 'i':'x5'})}}"
+      }
+    },
+    "ma": {
+      "rule_type": "Custom",
+      "rule_description": " {{select(arr, {'A':'x16', 'B':'x17'})}}",
+      "rule_data": {
+        "type": "custom",
+        "description": " {{select(arr, {'A':'x16', 'B':'x17'})}}"
+      }
+    },
+    "idx": {
+      "rule_type": "Random Number",
+      "rule_description": "1..10 step 1",
+      "rule_data": {
+        "type": "random_number",
+        "min": 1,
+        "max": 10,
+        "step": 1
+      }
+    },
+    "cond": {
+      "rule_type": "Random Choice",
+      "rule_description": "4 choices",
+      "rule_data": {
+        "type": "random_choice",
+        "choices": [
+          "==",
+          "<",
+          ">=",
+          "!="
+        ]
+      }
+    },
+    "ncond": {
+      "rule_type": "Custom",
+      "rule_description": "{{select(cond, {'==':'!=', '!=':'==', '>=':'<', '<':'>=' })}}",
+      "rule_data": {
+        "type": "custom",
+        "description": "{{select(cond, {'==':'!=', '!=':'==', '>=':'<', '<':'>=' })}}"
+      }
+    },
+    "nbranch": {
+      "rule_type": "Custom",
+      "rule_description": "{{select(cond, {'==':'bne', '!=':'beq', '>=':'blt', '<':'bge' })}}",
+      "rule_data": {
+        "type": "custom",
+        "description": "{{select(cond, {'==':'bne', '!=':'beq', '>=':'blt', '<':'bge' })}}"
+      }
+    }
+  },
+  "question_template": "<pre><span>if ({{v1}} {{cond}} {{v2}}) { <br />    {{arr}}[{{idx}}] = {{v1}} + {{v2}};<br /></span>}<br /><span>else {<br />   {{arr}}[{{idx}}] = 0;<br />}</span></pre>",
+  "question_type": "Essay",
+  "template_data": {
+    "type": "open",
+    "answer_key": "<p><strong>lw {{r1}}, 0({{m1}})</strong> <em># load {{v1}}</em></p>\n<p><strong>lw {{r2}}, 0({{m2}})</strong> <em># load {{v2}}</em></p>\n<p>&nbsp;</p>\n<p><strong>{{nbranch}} {{r1}}, {{r2}}, else</strong> <em># if {{v1}} {{ncond}} {{v2}}, skip straight to else</em></p>\n<p><strong>add x20, {{r1}}, {{r2}}</strong> <em># a+b stored in x20</em></p>\n<p><strong>sw x20, {{idx*4}}({{ma}})</strong> <em># x20 stored in memory at {{arr}}[{{idx}}]</em></p>\n<p><strong>beq x0, x0, exit</strong> <em># Unconditionally jump to exit (since x0 = x0, always)</em></p>\n<p><strong>else:</strong></p>\n<p><span><strong>sw x0, {{idx*4}}({{ma}})</strong> <em># Store 0 at {{arr}}[{{idx}}]</em></span></p>\n<p><strong>exit:</strong></p>",
+    "general_comment": "",
+    "include_general": false,
+    "comment_from_answer": false
+  }
+}
